@@ -147,9 +147,8 @@ namespace CoverUp.Splatter.Samples
             }
 
             // a click erases a small splat's worth of paint
-            if (Input.GetMouseButtonDown(0) && shown.Done)
+            if (ClickedThisFrame(out Vector2 m) && shown.Done)
             {
-                Vector2 m = Input.mousePosition;
                 float px = m.x / Screen.width * width, py = m.y / Screen.height * height;
                 var hole = SplatRules.Generate(Random.Range(1, int.MaxValue), Random.Range(9f, 16f), width / (float)Screen.width, 0f, vMul: 0f);
                 live.AddSplat(hole, px, py, hole: true);
@@ -160,6 +159,19 @@ namespace CoverUp.Splatter.Samples
         private void LateUpdate()
         {
             if (shown != null && shown.Dirty) shown.Present();
+        }
+
+        /// <summary>The primary button's press this frame, on whichever input backend the project runs.</summary>
+        private static bool ClickedThisFrame(out Vector2 screenPosition)
+        {
+#if ENABLE_INPUT_SYSTEM
+            var mouse = UnityEngine.InputSystem.Mouse.current;
+            if (mouse != null && mouse.leftButton.wasPressedThisFrame) { screenPosition = mouse.position.ReadValue(); return true; }
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetMouseButtonDown(0)) { screenPosition = Input.mousePosition; return true; }
+#endif
+            screenPosition = default;
+            return false;
         }
 
         private void OnDestroy()
