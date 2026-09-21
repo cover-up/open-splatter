@@ -75,7 +75,7 @@ A composition is a list of items in paint order, grouped by what arrived togethe
 
 ## Tuning
 
-`SplatPalette` is the colour theme: which hues a painting draws, how saturated and bright they are, and whether one splat is white. `Rainbow`, `Cool` and `Muted` are presets and the fields are yours to change. A composition draws its whole hue set from it; `Pick` gives one colour for a splat on its own, which is what the palette overload of `Generate` uses.
+`SplatPalette` is the colour theme: which hues a painting draws, how saturated and bright they are, and whether one splat is white. `Rainbow`, `Cool` and `Muted` are presets, each a fresh copy whose fields are yours to change, and `Presets` and `ByName` reach them for a dropdown or a console. A composition draws its whole hue set from it; `Pick` gives one colour for a splat on its own, which is what the palette overload of `Generate` uses.
 
 `SplatRuleOverrides` changes any rule's range without touching the table, for a composition and every splat it adds:
 

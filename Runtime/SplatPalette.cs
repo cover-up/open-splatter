@@ -28,6 +28,18 @@ namespace CoverUp.Splatter
         public static SplatPalette Cool => new SplatPalette { Name = "Cool", CountLo = 4, CountHi = 6, HueLo = 85, HueHi = 335, SMul = 0.98f, VMul = 0.95f, WhiteChance = 1f };
         public static SplatPalette Muted => new SplatPalette { Name = "Muted", CountLo = 4, CountHi = 5, SMul = 0.85f, VMul = 0.62f };
 
+        /// <summary>The presets, fresh copies, for a menu or a dropdown to offer.</summary>
+        public static SplatPalette[] Presets => new[] { Rainbow, Cool, Muted };
+
+        /// <summary>A preset by name, ignoring case, or null when nothing matches.</summary>
+        public static SplatPalette ByName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (var p in Presets)
+                if (string.Equals(p.Name, name, System.StringComparison.OrdinalIgnoreCase)) return p;
+            return null;
+        }
+
         /// <summary>
         /// One colour for a splat on its own: a bank hue by its share of the front layer, or one
         /// spread over the range, jittered a few degrees as a composition's hues are, with the
