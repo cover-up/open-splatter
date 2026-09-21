@@ -1,6 +1,6 @@
 # Open Splatter
 
-Procedural paint splatter for Unity. A seed goes in, a splat comes out: a lobed core, a dissolving web of paint around it, crown fingers, drops trailing off in lines, chains dragged out to teardrop heads, and a cloud of spray. A composition layer lays a whole painting from them, and a GPU painter puts it on a texture with an optional outer glow. Generation is pure C# and runs on a worker thread; painting depends on UnityEngine only, on any render pipeline.
+A seed based procedural paint splatter for Unity. A composition layer lays a whole painting from them, and a GPU painter puts it on a texture with an optional outer glow.
 
 ![Six splats from six seeds](Documentation~/images/splats.jpg)
 
