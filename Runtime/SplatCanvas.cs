@@ -1,30 +1,49 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Rendering;
 using static CoverUp.Splatter.SplatRules;
 
 namespace CoverUp.Splatter
 {
     /// <summary>
-    /// Paints a <see cref="SplatComposition"/> into a RenderTexture on the GPU, one item per
-    /// call, so a painting can build progressively. Each item is a handful of small draws into
-    /// scratch textures (max-blended primitives, a rounding pass) and composite steps onto the
-    /// canvas: chains first (thinned where they cross paint already down), then the body, then
-    /// the spray (dots landing on paint survive with a probability), then the splat's own throws.
+    /// Paints splats into a RenderTexture on the GPU. <see cref="Paint"/> puts one recipe down
+    /// at a point; <see cref="Begin"/> and <see cref="PaintNext"/> walk a
+    /// <see cref="SplatComposition"/> one item per call, so a painting can build progressively.
+    /// Each splat is a handful of small draws into scratch textures (max-blended primitives, a
+    /// rounding pass) and composite steps onto the canvas: chains first (thinned where they
+    /// cross paint already down), then the body, then the spray (dots landing on paint survive
+    /// with a probability). For a halo around the paint see <see cref="SplatGlow"/>.
     /// </summary>
     public sealed class SplatCanvas : IDisposable
     {
         public RenderTexture Texture { get; private set; }
-        public SplatComposition Composition { get; private set; }
         public int Width => Texture != null ? Texture.width : 0;
         public int Height => Texture != null ? Texture.height : 0;
+        /// <summary>A transparent canvas starts clear and ends straight-alpha (see
+        /// <see cref="Unpremultiply"/>); an opaque one is black.</summary>
+        public bool Transparent { get; }
+        /// <summary>Counts up on every paint and clear, so a follower such as
+        /// <see cref="SplatGlow"/> knows when to rerun.</summary>
+        public int Version { get; private set; }
+
+        /// <summary>A multiplier on the paint's colour as it is written into the half-float canvas.
+        /// Above 1 the paint exceeds white, which a bloom post-process thresholded at 1 picks up
+        /// while ordinary UI does not; the cost is a small hue drift in colours with a strong
+        /// second channel (pinks, sky blues) as their top channel clips at the display. 1 is
+        /// plain paint.</summary>
+        public static float DefaultGain = 1f;
+        public float Gain = DefaultGain;
+        /// <summary>The odds that a spray dot landing on paint already down survives, and the
+        /// opacity left to a chain or throw lying over paint. A composition draws its own from
+        /// the rules and <see cref="Begin"/> takes them over; a splat painted on its own uses
+        /// what is set here. The defaults are the measured values.</summary>
+        public float SprayOnPaint = 0.45f, ChainOnPaint = 0.75f;
+
+        /// <summary>The composition <see cref="PaintNext"/> is walking, if any.</summary>
+        public SplatComposition Composition { get; private set; }
         public int ItemsPainted { get; private set; }
         public int ItemCount => Composition?.Items.Count ?? 0;
         public bool Done => Composition == null || ItemsPainted >= Composition.Items.Count;
-        public bool Idle => Composition == null;
-        /// <summary>Set once a composition has been painted to the end (the followers read the art then).</summary>
-        public bool Complete { get; private set; }
 
         static Material mat;
         static readonly int PrimsId = Shader.PropertyToID("_Prims"), TargetId = Shader.PropertyToID("_Target"), CentreId = Shader.PropertyToID("_Centre"),
@@ -37,37 +56,11 @@ namespace CoverUp.Splatter
             AlphaId = Shader.PropertyToID("_Alpha"), AlphaTexelId = Shader.PropertyToID("_AlphaTexel"), SrcId = Shader.PropertyToID("_Src"),
             SrcTexelId = Shader.PropertyToID("_SrcTexel"), ModeId = Shader.PropertyToID("_Mode"), PChainId = Shader.PropertyToID("_PChain"),
             Col0 = Shader.PropertyToID("_Col0"), Col1 = Shader.PropertyToID("_Col1"), Col2 = Shader.PropertyToID("_Col2"), Col3 = Shader.PropertyToID("_Col3"),
-            GainId = Shader.PropertyToID("_Gain"),
-            NearId = Shader.PropertyToID("_Near"), FarId = Shader.PropertyToID("_Far"), StrengthId = Shader.PropertyToID("_Strength"),
-            FarWeightId = Shader.PropertyToID("_FarWeight"), DirId = Shader.PropertyToID("_Dir"), HoleId = Shader.PropertyToID("_Hole");
-        static Material glowMat;
+            GainId = Shader.PropertyToID("_Gain"), HoleId = Shader.PropertyToID("_Hole");
         /// <summary>Half float: room for paint above 1.0 (bloom), and no banding in the softer shades.</summary>
         const RenderTextureFormat CanvasFormat = RenderTextureFormat.ARGBHalf;
         // pass indices follow the order in SplatPaint.shader
         const int PassPrims = 0, PassPolar = 1, PassRound = 2, PassAccum = 3, PassComposite = 4, PassUnpremultiply = 5;
-        /// <summary>A transparent canvas starts clear and ends straight-alpha (see
-        /// <see cref="Unpremultiply"/>); an opaque one is black.</summary>
-        public bool Transparent { get; }
-        /// <summary>A multiplier on the paint's colour as it is written into the half-float canvas.
-        /// Above 1 the paint exceeds white, which a bloom post-process thresholded at 1 picks up
-        /// while ordinary UI does not; the cost is a small hue drift in colours with a strong
-        /// second channel (pinks, sky blues) as their top channel clips at the display. 1 is
-        /// plain paint.</summary>
-        public static float DefaultGain = 1f;
-        public float Gain = DefaultGain;
-        /// <summary>The outer glow: an opaque canvas presents a display texture that is the sharp
-        /// paint plus a blurred copy of it, added only where the canvas is still black, so every
-        /// splat wears a halo of its own colour in the gaps while the paint itself stays exactly
-        /// as painted. Strength scales the halo; the radius is in the rules' frame px (about one
-        /// core radius by default), with a fainter tail at four times it. 0 presents the sharp
-        /// paint as is.</summary>
-        public static float DefaultGlow = 0f, DefaultGlowRadius = 40f;
-        public float Glow = DefaultGlow, GlowRadius = DefaultGlowRadius;
-        /// <summary>The sharp canvas changed since the last <see cref="Present"/>.</summary>
-        public bool Dirty { get; private set; }
-        /// <summary>Force the next <see cref="Present"/> (a glow setting changed).</summary>
-        public void Touch() { Dirty = true; }
-        RenderTexture sharp;      // the exactly painted canvas; the same texture for a transparent canvas, else the display is derived from it
 
         GraphicsBuffer prims; Prim[] primScratch = new Prim[1024];
         readonly List<RenderTexture> pool = new List<RenderTexture>(8);
@@ -75,90 +68,10 @@ namespace CoverUp.Splatter
         public SplatCanvas(int width, int height, bool transparent = false)
         {
             Transparent = transparent;
-            if (transparent)
-            {
-                Texture = NewRt(width, height, CanvasFormat, "SplatCanvas");
-                sharp = Texture;
-            }
-            else
-            {
-                // the display (what the RawImage shows) is derived from the sharp paint by Present();
-                // no alpha needed on an opaque canvas, so the packed float format halves its memory
-                sharp = NewRt(width, height, CanvasFormat, "SplatCanvasSharp");
-                var displayFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RGB111110Float) ? RenderTextureFormat.RGB111110Float : CanvasFormat;
-                Texture = NewRt(width, height, displayFormat, "SplatCanvas");
-            }
+            Texture = new RenderTexture(width, height, 0, CanvasFormat, RenderTextureReadWrite.Linear)
+            { name = "SplatCanvas", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false };
+            Texture.Create();
             Clear();
-        }
-
-        static RenderTexture NewRt(int width, int height, RenderTextureFormat format, string name)
-        {
-            var rt = new RenderTexture(width, height, 0, format, RenderTextureReadWrite.Linear)
-            { name = name, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false };
-            rt.Create();
-            return rt;
-        }
-
-        static Material GlowMat()
-        {
-            if (glowMat == null)
-            {
-                var sh = Shader.Find("OpenSplatter/Glow");
-                if (sh == null) { Debug.LogError("SplatCanvas: shader OpenSplatter/Glow is missing from the build"); return null; }
-                glowMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
-            }
-            return glowMat;
-        }
-
-        /// <summary>
-        /// Opaque canvases: derive the display texture from the sharp paint, with the outer glow
-        /// added in the black gaps. A few small blits (the paint blurred at an eighth and a
-        /// thirty-second of its size, then one full-size composite); the owner calls it once per
-        /// frame that painted, on <see cref="Dirty"/>.
-        /// </summary>
-        public void Present()
-        {
-            Dirty = false;
-            if (Transparent || Texture == sharp) return;
-            var prev = RenderTexture.active;
-            var m = Glow > 0f ? GlowMat() : null;
-            if (m == null) { Graphics.Blit(sharp, Texture); RenderTexture.active = prev; return; }
-            try
-            {
-                int w = Width, h = Height;
-                float scale = Composition != null && Composition.Scale > 0f ? Composition.Scale : 1f;
-                float sigma = Mathf.Clamp(GlowRadius * scale / 8f / 2.5f, 0.6f, 5f);   // the near halo blurs at 1/8 size
-                var d2 = Temp(w / 2, h / 2); var d4 = Temp(w / 4, h / 4); var d8 = Temp(w / 8, h / 8);
-                Graphics.Blit(sharp, d2); Graphics.Blit(d2, d4); Graphics.Blit(d4, d8);
-                var t8 = Temp(w / 8, h / 8); var near = Temp(w / 8, h / 8);
-                Gaussian(m, d8, t8, 1f, 0f, sigma); Gaussian(m, t8, near, 0f, 1f, sigma);
-                var d16 = Temp(w / 16, h / 16); var d32 = Temp(w / 32, h / 32);
-                Graphics.Blit(near, d16); Graphics.Blit(d16, d32);
-                var t32 = Temp(w / 32, h / 32); var far = Temp(w / 32, h / 32);
-                Gaussian(m, d32, t32, 1f, 0f, sigma); Gaussian(m, t32, far, 0f, 1f, sigma);
-                m.SetTexture(NearId, near); m.SetTexture(FarId, far);
-                m.SetFloat(StrengthId, Glow); m.SetFloat(FarWeightId, 0.5f);
-                Graphics.Blit(sharp, Texture, m, 1);
-            }
-            finally
-            {
-                RenderTexture.active = prev;
-                ReleasePool();
-            }
-        }
-
-        RenderTexture Temp(int w, int h)
-        {
-            var rt = RenderTexture.GetTemporary(Mathf.Max(1, w), Mathf.Max(1, h), 0, CanvasFormat, RenderTextureReadWrite.Linear);
-            rt.filterMode = FilterMode.Bilinear; rt.wrapMode = TextureWrapMode.Clamp;
-            pool.Add(rt);
-            return rt;
-        }
-
-        static void Gaussian(Material m, RenderTexture src, RenderTexture dst, float dx, float dy, float sigma)
-        {
-            m.SetVector(DirId, new Vector4(dx, dy, 0f, 0f)); m.SetFloat(SigmaId, sigma);
-            Graphics.Blit(src, dst, m, 0);
         }
 
         static Material Mat()
@@ -175,11 +88,36 @@ namespace CoverUp.Splatter
         /// <summary>Opaque black, or clear for a transparent canvas.</summary>
         public void Clear()
         {
-            var bg = Transparent ? Color.clear : Color.black;
             var prev = RenderTexture.active;
-            RenderTexture.active = Texture; GL.Clear(false, true, bg);
-            if (sharp != Texture) { RenderTexture.active = sharp; GL.Clear(false, true, bg); }
+            RenderTexture.active = Texture; GL.Clear(false, true, Transparent ? Color.clear : Color.black);
             RenderTexture.active = prev;
+            Version++;
+        }
+
+        // --- one splat at a time -------------------------------------------------------------------
+
+        /// <summary>Paint one recipe with its centre at (<paramref name="x"/>, <paramref name="y"/>)
+        /// canvas px, y up. A <paramref name="hole"/> erases the recipe's shape to the background
+        /// instead of painting it.</summary>
+        public void Paint(SplatRecipe recipe, float x, float y, bool hole = false)
+        {
+            var m = Mat(); if (m == null || recipe == null) return;
+            var prev = RenderTexture.active;
+            try { PaintSplat(m, recipe, x, y, hole); }
+            finally { RenderTexture.active = prev; ReleasePool(); }
+        }
+
+        /// <summary>Paint a <see cref="Part"/> (a composition's throws or spatter, or any shape
+        /// built from discs and capsules) in one flat colour, its prims offset by
+        /// (<paramref name="x"/>, <paramref name="y"/>); each prim's own value multiplier still
+        /// applies. <paramref name="scale"/> is display px per frame px and sets how much the
+        /// edges are rounded.</summary>
+        public void PaintPieces(Part pieces, float x, float y, float hue, float scale = 1f, float sMul = 1f, float vMul = 1f)
+        {
+            var m = Mat(); if (m == null || pieces == null || pieces.Empty) return;
+            var prev = RenderTexture.active;
+            try { PaintFlat(m, pieces, x, y, hue, sMul, vMul, scale); }
+            finally { RenderTexture.active = prev; ReleasePool(); }
         }
 
         /// <summary>
@@ -194,11 +132,8 @@ namespace CoverUp.Splatter
             const int pad = 4;
             int w = Mathf.Clamp(Mathf.CeilToInt(x1 - x0) + 2 * pad, 8, 2048), h = Mathf.Clamp(Mathf.CeilToInt(y1 - y0) + 2 * pad, 8, 2048);
             centre = new Vector2(pad - x0, pad - y0);
-            var canvas = new SplatCanvas(w, h, transparent: true);
-            var comp = new SplatComposition { Width = w, Height = h, Scale = r.Scale, PSpray = sprayOnPaint, PChain = 1f };
-            comp.Items.Add(new SplatComposition.Item { Kind = SplatComposition.ItemKind.Splat, Recipe = r, X = centre.x, Y = centre.y });
-            canvas.Begin(comp);
-            canvas.PaintAll();
+            var canvas = new SplatCanvas(w, h, transparent: true) { SprayOnPaint = sprayOnPaint, ChainOnPaint = 1f };
+            canvas.Paint(r, centre.x, centre.y);
             canvas.Unpremultiply();
             return canvas;
         }
@@ -219,34 +154,28 @@ namespace CoverUp.Splatter
             Graphics.DrawProceduralNow(MeshTopology.Triangles, 6, 1);
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(copy);
+            Version++;
         }
 
-        /// <summary>Start painting a composition into a cleared canvas.</summary>
+        // --- a composition, one item per call ------------------------------------------------------
+
+        /// <summary>Start painting a composition into a cleared canvas; its spray and chain odds
+        /// become the canvas's. Null forgets the current one.</summary>
         public void Begin(SplatComposition composition)
         {
-            Composition = composition; ItemsPainted = 0; Complete = false;
+            Composition = composition; ItemsPainted = 0;
+            if (composition != null) { SprayOnPaint = composition.PSpray; ChainOnPaint = composition.PChain; }
             Clear();
         }
 
         /// <summary>Paint the next item. Returns false when the composition is finished.</summary>
         public bool PaintNext()
         {
-            if (Composition == null || ItemsPainted >= Composition.Items.Count) { Complete = Composition != null; return false; }
-            var m = Mat(); if (m == null) return false;
-            var prevActive = RenderTexture.active;
-            try
-            {
-                var item = Composition.Items[ItemsPainted];
-                if (item.Kind == SplatComposition.ItemKind.Splat) PaintSplat(m, item);
-                else PaintPieces(m, item);
-            }
-            finally
-            {
-                RenderTexture.active = prevActive;
-                ReleasePool();
-            }
+            if (Composition == null || ItemsPainted >= Composition.Items.Count) return false;
+            var item = Composition.Items[ItemsPainted];
+            if (item.Kind == SplatComposition.ItemKind.Splat) Paint(item.Recipe, item.X, item.Y, item.Hole);
+            else PaintPieces(item.Pieces, item.X, item.Y, item.Hue, Composition.Scale, item.SMul, item.VMul);
             ItemsPainted++;
-            if (ItemsPainted >= Composition.Items.Count) Complete = true;
             return ItemsPainted < Composition.Items.Count;
         }
 
@@ -257,13 +186,11 @@ namespace CoverUp.Splatter
         /// canvas is replaced); further appended items paint from here.</summary>
         public void MarkAllPainted() { if (Composition != null) ItemsPainted = Composition.Items.Count; }
 
-        // --- one splat ---------------------------------------------------------------------------
-        void PaintSplat(Material m, SplatComposition.Item item)
+        // --- one splat: chains, body, spray ---------------------------------------------------------
+        void PaintSplat(Material m, SplatRecipe R, float cx, float cy, bool hole)
         {
-            var R = item.Recipe;
-            float cx = item.X, cy = item.Y;
             m.SetVector(CentreId, new Vector4(cx, cy, 0, 0));
-            m.SetFloat(HoleId, item.Hole ? 1f : 0f);   // a click's hole erases (black, alpha 0) with the same shape rules
+            m.SetFloat(HoleId, hole ? 1f : 0f);   // a hole erases (black, alpha 0) with the same shape rules
             SetColour(m, R);
             float sigma = Mathf.Max(0.35f, 0.45f * R.Scale);
 
@@ -275,7 +202,7 @@ namespace CoverUp.Splatter
                 {
                     var raw = Scratch(rect); DrawPrims(m, raw, rect, R.Chains, null, 0f, 0f);
                     var rounded = Scratch(rect); Round(m, raw, null, rounded, rect, sigma, Vector4.zero);
-                    Composite(m, rounded, rect, 1, Composition.PChain);
+                    Composite(m, rounded, rect, 1, ChainOnPaint);
                 }
             }
             // body: rounded(core + stubs) max web max drops
@@ -305,27 +232,25 @@ namespace CoverUp.Splatter
                 if (rect.width > 1 && rect.height > 1)
                 {
                     var below = Below(rect);
-                    var spray = Scratch(rect); DrawPrims(m, spray, rect, R.Spray, below, Composition.PSpray, R.Seed * 0.001f);
+                    var spray = Scratch(rect); DrawPrims(m, spray, rect, R.Spray, below, SprayOnPaint, R.Seed * 0.001f);
                     Composite(m, spray, rect, 0, 0f);
                 }
             }
         }
 
-        // --- a pieces item (throws of one core, or one spatter drop): flat colour per piece ------
-        void PaintPieces(Material m, SplatComposition.Item item)
+        // --- a flat-coloured part: throws of one core, a spatter drop, or a caller's own shape ------
+        void PaintFlat(Material m, Part part, float x, float y, float hue, float sMul, float vMul, float scale)
         {
-            var part = item.Pieces;
-            if (part == null || part.Empty) return;
-            var rect = RectOf(part, item.X, item.Y);
+            var rect = RectOf(part, x, y);
             if (rect.width <= 1 || rect.height <= 1) return;
-            m.SetVector(CentreId, new Vector4(item.X, item.Y, 0, 0));
+            m.SetVector(CentreId, new Vector4(x, y, 0, 0));
             m.SetFloat(HoleId, 0f);
-            m.SetVector(Col0, new Vector4(item.Hue, item.SMul, item.VMul, 1f));
+            m.SetVector(Col0, new Vector4(hue, sMul, vMul, 1f));
             m.SetVector(Col1, new Vector4(1, 1, 1, 0)); m.SetVector(Col2, Vector4.one); m.SetVector(Col3, Vector4.one);
-            float sigma = Mathf.Max(0.35f, 0.45f * Composition.Scale);
+            float sigma = Mathf.Max(0.35f, 0.45f * scale);
             var raw = Scratch(rect); DrawPrims(m, raw, rect, part, null, 0f, 0f);
             var rounded = Scratch(rect); Round(m, raw, null, rounded, rect, sigma, Vector4.zero);
-            Composite(m, rounded, rect, 2, Composition.PChain);
+            Composite(m, rounded, rect, 2, ChainOnPaint);
         }
 
         void SetColour(Material m, SplatRecipe R)
@@ -362,14 +287,14 @@ namespace CoverUp.Splatter
             RenderTexture.active = rt; GL.Clear(false, true, Color.clear);
             return rt;
         }
-        /// <summary>A copy of the (sharp) canvas region already down.</summary>
+        /// <summary>A copy of the canvas region already down.</summary>
         RenderTexture Below(RectInt rect)
         {
-            var rt = RenderTexture.GetTemporary(Mathf.Max(1, rect.width), Mathf.Max(1, rect.height), 0, sharp.format, RenderTextureReadWrite.Linear);
+            var rt = RenderTexture.GetTemporary(Mathf.Max(1, rect.width), Mathf.Max(1, rect.height), 0, Texture.format, RenderTextureReadWrite.Linear);
             rt.filterMode = FilterMode.Point; rt.wrapMode = TextureWrapMode.Clamp;
             pool.Add(rt);
             if (rect.width > 0 && rect.height > 0)   // a rect clamped away at the canvas edge is empty
-                Graphics.CopyTexture(sharp, 0, 0, rect.xMin, rect.yMin, rect.width, rect.height, rt, 0, 0, 0, 0);
+                Graphics.CopyTexture(Texture, 0, 0, rect.xMin, rect.yMin, rect.width, rect.height, rt, 0, 0, 0, 0);
             return rt;
         }
         static bool Empty(RectInt r) => r.width <= 0 || r.height <= 0;
@@ -444,22 +369,16 @@ namespace CoverUp.Splatter
             m.SetVector(AlphaTexelId, new Vector4(1f / alpha.width, 1f / alpha.height, alpha.width, alpha.height));
             m.SetVector(RectId, V(rect)); m.SetVector(TargetId, new Vector4(0, 0, Width, Height));
             m.SetFloat(ModeId, mode); m.SetFloat(PChainId, pChain); m.SetFloat(GainId, Gain);
-            RenderTexture.active = sharp;
+            RenderTexture.active = Texture;
             m.SetPass(PassComposite);
             Graphics.DrawProceduralNow(MeshTopology.Triangles, 6, 1);
-            Dirty = true;                                           // the owner presents the display once per frame
+            Version++;
         }
 
         public void Dispose()
         {
             ReleasePool();
             prims?.Dispose(); prims = null;
-            if (sharp != null && sharp != Texture)
-            {
-                sharp.Release();
-                if (Application.isPlaying) UnityEngine.Object.Destroy(sharp); else UnityEngine.Object.DestroyImmediate(sharp);
-            }
-            sharp = null;
             if (Texture != null)
             {
                 Texture.Release();
