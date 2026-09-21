@@ -9,7 +9,8 @@ namespace CoverUp.Splatter.Samples
     /// with a RawImage, generates a composition on a worker thread, paints it one splat at a
     /// time, then keeps it alive: every <see cref="pushEvery"/> seconds one more splat lands, and
     /// half that later the oldest dissolves through a crossfade between two canvases. Click
-    /// anywhere to punch a hole in the paint.
+    /// anywhere to punch a hole in the paint. With a glow above 0 each canvas is shown through a
+    /// <see cref="SplatGlow"/> of its own.
     /// </summary>
     public sealed class SplatterBackdrop : MonoBehaviour
     {
@@ -28,11 +29,12 @@ namespace CoverUp.Splatter.Samples
         public float fadeTime = 1f;
         [Tooltip("The paint's colour multiplier; above 1 it exceeds white, for a bloom to pick up.")]
         public float gain = 1f;
-        [Tooltip("The outer glow's strength in the black gaps; 0 is off.")]
+        [Tooltip("The outer glow's strength in the black gaps. 0 is off, and switches it off for the whole run.")]
         [Range(0f, 2f)] public float glow = 0f;
 
         private RawImage shownImage, fadeImage;
         private SplatCanvas shown, hidden;
+        private SplatGlow shownGlow, hiddenGlow;   // null while the glow is off
         private SplatComposition live;
         private SplatRng pushRng;
         private Task<SplatComposition> generating;
@@ -54,8 +56,9 @@ namespace CoverUp.Splatter.Samples
             width = Mathf.RoundToInt(Screen.width * supersample);
             height = Mathf.RoundToInt(Screen.height * supersample);
             shown = NewCanvas(); hidden = NewCanvas();
-            shownImage.texture = shown.Texture;
-            fadeImage.texture = hidden.Texture;
+            if (glow > 0f) { shownGlow = NewGlow(); hiddenGlow = NewGlow(); }
+            shownImage.texture = Display(shown, shownGlow);
+            fadeImage.texture = Display(hidden, hiddenGlow);
 
             int s = seed != 0 ? seed : Random.Range(1, int.MaxValue);
             SplatPalette p = palette == Preset.Cool ? SplatPalette.Cool : palette == Preset.Muted ? SplatPalette.Muted : SplatPalette.Rainbow;
@@ -63,7 +66,9 @@ namespace CoverUp.Splatter.Samples
             generating = Task.Run(() => SplatComposition.Generate(s, p, w, h));
         }
 
-        private SplatCanvas NewCanvas() => new SplatCanvas(width, height) { Gain = gain, Glow = glow };
+        private SplatCanvas NewCanvas() => new SplatCanvas(width, height) { Gain = gain };
+        private SplatGlow NewGlow() => new SplatGlow(width, height) { Strength = glow };
+        private static Texture Display(SplatCanvas canvas, SplatGlow glow) => glow != null ? glow.Texture : canvas.Texture;
 
         private static RawImage NewLayer(Transform parent, string name)
         {
@@ -85,6 +90,7 @@ namespace CoverUp.Splatter.Samples
             {
                 live = generating.Result; generating = null;
                 pushRng = new SplatRng(unchecked(live.Seed * 7919 + 17));
+                if (shownGlow != null) shownGlow.Radius = hiddenGlow.Radius = 40f * live.Scale;   // one core radius at this size
                 shown.Begin(live);
                 if (paintStep <= 0f) shown.PaintAll();
                 paintDue = t;
@@ -123,7 +129,6 @@ namespace CoverUp.Splatter.Samples
                         shown.MarkAllPainted();
                         hidden.Begin(live);
                         hidden.PaintAll();
-                        hidden.Present();
                         fadeImage.color = new Color(1f, 1f, 1f, 0f);
                         fadeImage.enabled = true;
                         fading = true; fadeStart = t;
@@ -137,8 +142,9 @@ namespace CoverUp.Splatter.Samples
                 if (k >= 1f)
                 {
                     (shown, hidden) = (hidden, shown);
-                    shownImage.texture = shown.Texture;
-                    fadeImage.texture = hidden.Texture;
+                    (shownGlow, hiddenGlow) = (hiddenGlow, shownGlow);
+                    shownImage.texture = Display(shown, shownGlow);
+                    fadeImage.texture = Display(hidden, hiddenGlow);
                     hidden.Begin(null);
                     fadeImage.enabled = false;
                     fading = false;
@@ -158,7 +164,11 @@ namespace CoverUp.Splatter.Samples
 
         private void LateUpdate()
         {
-            if (shown != null && shown.Dirty) shown.Present();
+            // the glows follow the inspector and rerun only on frames their paint changed
+            if (shownGlow == null) return;
+            shownGlow.Strength = hiddenGlow.Strength = glow;
+            shownGlow.Render(shown);
+            if (fading) hiddenGlow.Render(hidden);
         }
 
         /// <summary>The primary button's press this frame, on whichever input backend the project runs.</summary>
@@ -177,6 +187,7 @@ namespace CoverUp.Splatter.Samples
         private void OnDestroy()
         {
             shown?.Dispose(); hidden?.Dispose();
+            shownGlow?.Dispose(); hiddenGlow?.Dispose();
         }
     }
 }

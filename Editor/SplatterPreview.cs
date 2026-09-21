@@ -6,7 +6,8 @@ namespace CoverUp.Splatter.Editor
 {
     /// <summary>
     /// Renders splats to PNG files without entering play mode: a whole composition in each
-    /// palette, a strip of single splats, and the same composition after a few pushes and pops.
+    /// palette, the rainbow one again with the outer glow, a strip of single splats, and the same
+    /// composition after a few pushes and pops.
     /// Menu item, or headless:
     ///   Unity -batchmode -quit -projectPath ... -executeMethod CoverUp.Splatter.Editor.SplatterPreview.RenderHeadless -splatOut DIR [-splatSeed N]
     /// (no -nographics: the painter needs a GPU).
@@ -45,10 +46,15 @@ namespace CoverUp.Splatter.Editor
                 {
                     canvas.Begin(comp);
                     canvas.PaintAll();
-                    canvas.Present();
                     long paintMs = sw.ElapsedMilliseconds - genMs;
                     Save(canvas.Texture, Path.Combine(dir, $"composition-{palette.Name.ToLowerInvariant()}-{seed:000}.png"));
                     Debug.Log($"[OpenSplatter] {palette.Name} seed {seed}: {comp.Items.Count} items ({comp.CoreCount} cores, {comp.BedCount} bed, {comp.ThrowCount} throws), generate {genMs} ms, paint {paintMs} ms");
+                    if (palette.Bank == null) continue;
+                    using (var glow = new SplatGlow(1920, 1080) { Strength = 0.5f, Radius = 40f * comp.Scale })
+                    {
+                        glow.Render(canvas);
+                        Save(glow.Texture, Path.Combine(dir, $"glow-{seed:000}.png"));
+                    }
                 }
             }
 
@@ -61,27 +67,22 @@ namespace CoverUp.Splatter.Editor
                     canvas.Begin(comp); canvas.PaintAll();
                     for (int i = 0; i < 3; i++) { comp.ApplyPush(comp.PreparePush(rng)); canvas.PaintAll(); }
                     comp.PopOldest(); comp.PopOldest();
-                    canvas.Begin(comp); canvas.PaintAll(); canvas.Present();
+                    canvas.Begin(comp); canvas.PaintAll();
                     Save(canvas.Texture, Path.Combine(dir, $"living-{seed:000}.png"));
                 }
             }
 
             // six single splats on 1000 px tiles at 1.6 display px per frame px, cores of 30 to 62 frame px
             const int tile = 1000; const float scale = 1.6f;
-            using (var strip = new SplatCanvas(tile * 3, tile * 2))
+            using (var strip = new SplatCanvas(tile * 3, tile * 2) { SprayOnPaint = 1f, ChainOnPaint = 1f })
             {
-                var one = new SplatComposition { Seed = seed, Palette = SplatPalette.Rainbow, Width = tile * 3, Height = tile * 2, Scale = scale, PSpray = 1f, PChain = 1f };
                 float[] hues = { 190, 108, 20, 340, 290, 200 };
                 for (int i = 0; i < 6; i++)
                 {
                     int sd = seed * 100 + i + 1;
                     float rc = 30f + (float)new System.Random(sd + 99991).NextDouble() * 32f;
-                    var recipe = SplatRules.Generate(sd, rc, scale, hues[i]);
-                    one.Items.Add(new SplatComposition.Item { Kind = SplatComposition.ItemKind.Splat, Recipe = recipe, X = (i % 3) * tile + tile / 2f, Y = (1 - i / 3) * tile + tile / 2f });
+                    strip.Paint(SplatRules.Generate(sd, rc, scale, hues[i]), (i % 3) * tile + tile / 2f, (1 - i / 3) * tile + tile / 2f);
                 }
-                strip.Begin(one);
-                strip.PaintAll();
-                strip.Present();
                 Save(strip.Texture, Path.Combine(dir, $"splats-{seed:000}.png"));
             }
             Debug.Log("[OpenSplatter] wrote " + dir);
