@@ -1,0 +1,10 @@
+# Unity keeps its own state next to a package it imports; none of it belongs here.
+# The .meta files do: they pin the GUIDs a package is imported under.
+Library/
+Temp/
+Logs/
+obj/
+.vs/
+.idea/
+*.csproj
+*.sln
