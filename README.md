@@ -4,7 +4,7 @@ A seed based procedural paint splatter for Unity. A composition layer lays a who
 
 ![Six splats from six seeds](Documentation~/images/splats.jpg)
 
-There was no such generator to be found when the game this came out of needed one, so here it is.
+We couldn't find a good generator when we create the game, so here it is if anyone else needs it =)
 
 ## Install
 
