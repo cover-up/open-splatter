@@ -271,6 +271,19 @@ namespace CoverUp.Splatter
         static float AngDiff(float a, float b) => Math.Abs(WrapPi(a - b));
 
         /// <summary>
+        /// One splat coloured by a palette: hue, saturation, value and whiteness come from
+        /// <see cref="SplatPalette.Pick"/> on a random stream of their own, so the shape is exactly
+        /// what the hue overload makes for the seed, only coloured.
+        /// </summary>
+        public static SplatRecipe Generate(int seed, float rcFramePx, float scale, SplatPalette palette, float outward = float.NaN, SplatRuleOverrides overrides = null)
+        {
+            var (hue, sMul, vMul, white) = (palette ?? SplatPalette.Rainbow).Pick(new SplatRng(seed ^ ColourStream));
+            return Generate(seed, rcFramePx, scale, hue, outward, sMul, vMul, 1f, white, overrides);
+        }
+        /// <summary>Sets the colour's random stream apart from the shape's.</summary>
+        const int ColourStream = 0x2F1E9A57;
+
+        /// <summary>
         /// One splat. <paramref name="rcFramePx"/> is the core radius in measurement-frame px,
         /// <paramref name="scale"/> display px per frame px. <paramref name="outward"/> (radians,
         /// y up) is the direction from the frame centre through this splat in a composite: chains
