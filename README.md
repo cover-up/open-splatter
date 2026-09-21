@@ -1,6 +1,6 @@
 # Open Splatter
 
-A seed based procedural paint splatter for Unity. A composition layer lays a whole painting from them, and a GPU painter puts it on a texture with an optional outer glow.
+A seed based procedural paint splatter for Unity. A composition layer lays a whole painting from many splats, a GPU painter puts one splat or a whole painting on a texture, and an outer glow can go on top.
 
 ![Six splats from six seeds](Documentation~/images/splats.jpg)
 
@@ -20,7 +20,7 @@ Or add it to `Packages/manifest.json`:
 "com.coverup.splatter": "https://github.com/cover-up/open-splatter.git"
 ```
 
-The *Living Backdrop* sample under the package's Samples adds one component to a scene and paints a full-screen backdrop that keeps changing. *Window > Open Splatter > Render Preview* writes PNGs of a composition in each palette, a strip of single splats and a living painting after a few changes, without entering play mode.
+The *Living Backdrop* sample under the package's Samples adds one component to a scene and paints a full-screen backdrop that keeps changing. *Window > Open Splatter > Render Preview* writes PNGs of a composition in each palette, one of them with the glow, a strip of single splats and a living painting after a few changes, without entering play mode.
 
 ## Use
 
@@ -33,25 +33,22 @@ var composition = SplatComposition.Generate(seed: 7, SplatPalette.Rainbow, 1920,
 var canvas = new SplatCanvas(1920, 1080);
 canvas.Begin(composition);
 canvas.PaintAll();
-canvas.Present();
 rawImage.texture = canvas.Texture;   // dispose the canvas when you are done with the texture
 ```
 
 Painted one splat per frame instead, so it builds up in front of the player:
 
 ```csharp
-void Update()
-{
-    if (!canvas.Done) canvas.PaintNext();
-    if (canvas.Dirty) canvas.Present();
-}
+void Update() { if (!canvas.Done) canvas.PaintNext(); }
 ```
 
-One splat on its own transparent texture, for an effect or a sprite:
+Splats on their own, with no composition. A recipe comes from a seed, a core radius (in the rules' frame px, a painting 1672 px wide) and either a hue or a palette that picks the colour:
 
 ```csharp
 var recipe = SplatRules.Generate(seed: 3, rcFramePx: 40f, scale: 1.5f, hue: 200f);
-var single = SplatCanvas.RenderSingle(recipe, out Vector2 centre);   // straight alpha, ready for a RawImage
+var themed = SplatRules.Generate(seed: 4, rcFramePx: 40f, scale: 1.5f, SplatPalette.Cool);
+canvas.Paint(recipe, x: 300f, y: 200f);                             // onto any canvas, at a point in canvas px
+var single = SplatCanvas.RenderSingle(themed, out Vector2 centre);  // or on its own transparent texture, straight alpha, ready for a RawImage
 ```
 
 `Generate` is safe to call from a worker thread; only the canvas touches the GPU.
@@ -78,7 +75,7 @@ A composition is a list of items in paint order, grouped by what arrived togethe
 
 ## Tuning
 
-`SplatPalette` sets what hues a painting draws, how saturated and bright they are, and whether one splat is white; `Rainbow`, `Cool` and `Muted` are presets and the fields are yours to change.
+`SplatPalette` is the colour theme: which hues a painting draws, how saturated and bright they are, and whether one splat is white. `Rainbow`, `Cool` and `Muted` are presets and the fields are yours to change. A composition draws its whole hue set from it; `Pick` gives one colour for a splat on its own, which is what the palette overload of `Generate` uses.
 
 `SplatRuleOverrides` changes any rule's range without touching the table, for a composition and every splat it adds:
 
@@ -90,13 +87,25 @@ var rules = new SplatRuleOverrides()
 var composition = SplatComposition.Generate(seed, SplatPalette.Cool, 1920, 1080, rules);
 ```
 
-`SplatCanvas.Gain` multiplies the paint's colour on the way in; above 1 the paint exceeds white in the half-float canvas, which a bloom post-process thresholded at white picks up while ordinary UI does not. `SplatCanvas.Glow` and `GlowRadius` add an outer glow of each splat's own colour, only in the black gaps, so the paint itself is untouched.
+`SplatCanvas.Gain` multiplies the paint's colour on the way in; above 1 the paint exceeds white in the half-float canvas, which a bloom post-process thresholded at white picks up while ordinary UI does not. `SprayOnPaint` and `ChainOnPaint` are the odds that spray landing on paint survives and the opacity left to a chain over paint; a composition brings its own drawn values.
+
+`SplatGlow` adds an outer glow of each splat's own colour, only in the black gaps, so the paint itself is untouched. It renders into a texture of its own, so show that one:
+
+```csharp
+var glow = new SplatGlow(1920, 1080) { Strength = 0.5f, Radius = 40f * composition.Scale };
+rawImage.texture = glow.Texture;
+void LateUpdate() { glow.Render(canvas); }   // reruns only on frames the paint changed
+```
+
+![The same paint without and with the glow](Documentation~/images/glow.jpg)
 
 ## Layout
 
 - `Runtime/SplatRules.cs`: the rule table, the recipe, the generator, the random stream, value noise and a small Voronoi. Pure C#.
-- `Runtime/SplatComposition.cs`: palettes, the composition rules, the layer order, pushes, pops and holes. Pure C#.
-- `Runtime/SplatCanvas.cs` and `Runtime/Shaders/`: the painter and its passes (primitives, polar outlines, rounding, compositing with the colour field, the glow).
+- `Runtime/SplatPalette.cs`: the colour themes, for one splat or a whole painting. Pure C#.
+- `Runtime/SplatComposition.cs`: the composition rules, the layer order, pushes, pops and holes. Pure C#.
+- `Runtime/SplatCanvas.cs` and `Runtime/Shaders/SplatPaint.shader`: the painter and its passes (primitives, polar outlines, rounding, compositing with the colour field).
+- `Runtime/SplatGlow.cs` and `Runtime/Shaders/SplatGlow.shader`: the outer glow, a post step over any painted texture.
 - `Editor/SplatterPreview.cs`: the preview renderer.
 - `Samples~/Backdrop/`: the living backdrop.
 
