@@ -5,42 +5,6 @@ using static CoverUp.Splatter.SplatRules;
 namespace CoverUp.Splatter
 {
     /// <summary>
-    /// A palette: how many hues a composition draws and from where, the saturation and value
-    /// multipliers on every splat, and the chance of one white splat. <see cref="Rainbow"/>
-    /// draws from a fixed bank of ten neon hues with front-layer weights; <see cref="Cool"/> and
-    /// <see cref="Muted"/> spread a handful of hues evenly over a range. Make your own by
-    /// setting the fields, or by starting from a preset.
-    /// </summary>
-    public sealed class SplatPalette
-    {
-        public string Name = "Custom";
-        /// <summary>How many hues are drawn when there is no <see cref="Bank"/>.</summary>
-        public int CountLo = 5, CountHi = 8;
-        /// <summary>The hue range those are spread over, degrees.</summary>
-        public float HueLo = 0f, HueHi = 360f;
-        /// <summary>Saturation and value multipliers on every splat.</summary>
-        public float SMul = 1f, VMul = 1f;
-        /// <summary>The chance of one white splat among the mid-sized cores.</summary>
-        public float WhiteChance = 0f;
-        /// <summary>Fixed hues instead of a range: (hue, presence out of five, share of the front
-        /// layer). A hue with a presence of two or less drops out half the time, and every hue
-        /// jitters by a few degrees, so no two seeds share a palette exactly.</summary>
-        public (float hue, int presence, float weight)[] Bank;
-
-        public static SplatPalette Rainbow => new SplatPalette { Name = "Rainbow", Bank = NeonBank };
-        public static SplatPalette Cool => new SplatPalette { Name = "Cool", CountLo = 4, CountHi = 6, HueLo = 85, HueHi = 335, SMul = 0.98f, VMul = 0.95f, WhiteChance = 1f };
-        public static SplatPalette Muted => new SplatPalette { Name = "Muted", CountLo = 4, CountHi = 5, SMul = 0.85f, VMul = 0.62f };
-
-        // The neon set measured on the rainbow references, with how many of the five frames
-        // carried each hue and the share of the front layer it took.
-        static readonly (float hue, int presence, float weight)[] NeonBank =
-        {
-            (20, 5, 0.15f), (60, 3, 0.07f), (78, 2, 0.04f), (108, 4, 0.13f), (138, 2, 0.03f),
-            (190, 4, 0.12f), (208, 5, 0.04f), (250, 4, 0.06f), (278, 2, 0.03f), (325, 5, 0.33f),
-        };
-    }
-
-    /// <summary>
     /// A whole painting: the composition rules, measured on reference paintings, produce an
     /// ordered list of paint items for <see cref="SplatCanvas"/>. Pure C#, thread-safe,
     /// deterministic per seed.
@@ -65,7 +29,6 @@ namespace CoverUp.Splatter
         public readonly List<CoreInfo> Cores = new List<CoreInfo>(32);
         public int CoreCount, BedCount, ThrowCount;
         int nextGroup = 1;
-        float pSprayDrawn, pChainDrawn;
 
         public sealed class CoreInfo { public float X, Y, Rc, Hue; public bool Bed, White; public int Group; }
 
@@ -254,7 +217,7 @@ namespace CoverUp.Splatter
             for (int j = 0; j < throws.Count; j++) cores[throws[j].Src].Throws.Add(j);
             float bedV = Draw(rng, o, BedV), bedShade = Draw(rng, o, BedShade);
             float pSpray = Draw(rng, o, SprayOnPaint), pChain = Draw(rng, o, ChainOnPaint);
-            C.PSpray = pSpray; C.PChain = pChain; C.pSprayDrawn = pSpray; C.pChainDrawn = pChain;
+            C.PSpray = pSpray; C.PChain = pChain;
             C.bedV = bedV; C.bedShade = bedShade;
 
             foreach (var (rank, kind, idx) in order)
