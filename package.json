@@ -1,0 +1,14 @@
+{
+  "name": "com.coverup.splatter",
+  "version": "0.1.0",
+  "displayName": "Open Splatter",
+  "description": "Procedural paint splatter for Unity: seed-deterministic splats built from measured rules, a composition layer that lays a whole painting, and a GPU painter with an outer glow. Pure C# generation, UnityEngine-only painting, no render pipeline dependency.",
+  "unity": "2022.3",
+  "keywords": ["splatter", "paint", "splat", "procedural", "generative", "ui", "background"],
+  "author": { "name": "Cover Up", "url": "https://github.com/cover-up" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/cover-up/open-splatter.git" },
+  "samples": [
+    { "displayName": "Living Backdrop", "description": "A full-screen backdrop that paints a composition progressively, then keeps adding splats and dissolving the oldest.", "path": "Samples~/Backdrop" }
+  ]
+}
