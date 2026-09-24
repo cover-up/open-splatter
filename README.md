@@ -166,6 +166,8 @@ A hole erases to the background. Later splats see it as empty canvas, and the gl
 
 **Living Backdrop sample**, under the package's Samples tab. One component, full-screen backdrop that keeps changing.
 
+**Paintball Portrait sample**, under the same tab. One component. It loads a picture into a flat pixel array, takes every Nth pixel across and down for a place and a colour, and shoots a paintball splat there until the picture comes back. Assign any readable texture, or leave it empty for a stand-in face.
+
 ***Window > Open Splatter > Render Preview***. PNGs without play mode: a composition per palette, one with glow, a strip of single splats, a picture after a few changes.
 
 ## How it works
@@ -189,6 +191,7 @@ Compositions are the same idea one level up. Large dark splats go down first as 
 | `Runtime/SplatGlow.cs` + `Runtime/Shaders/SplatGlow.shader` | The glow pass. |
 | `Editor/SplatterPreview.cs` | The preview window. |
 | `Samples~/Backdrop/` | The Living Backdrop sample. |
+| `Samples~/PaintBallPainting/` | The Paintball Portrait sample. |
 
 ## Licence
 
