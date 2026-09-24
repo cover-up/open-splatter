@@ -9,6 +9,7 @@
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/cover-up/open-splatter.git" },
   "samples": [
-    { "displayName": "Living Backdrop", "description": "A full-screen backdrop that paints a composition progressively, then keeps adding splats and dissolving the oldest.", "path": "Samples~/Backdrop" }
+    { "displayName": "Living Backdrop", "description": "A full-screen backdrop that paints a composition progressively, then keeps adding splats and dissolving the oldest.", "path": "Samples~/Backdrop" },
+    { "displayName": "Paintball Portrait", "description": "Reads a picture into one flat array, samples every Nth pixel, and fires a paintball splat at that spot to rebuild the picture.", "path": "Samples~/PaintBallPainting" }
   ]
 }
