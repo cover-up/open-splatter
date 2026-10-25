@@ -127,6 +127,9 @@ namespace CoverUp.Splatter
         /// times <see cref="WebKeep"/>; every wall beyond the reach goes.</summary>
         static readonly float[] KeepQ = { 0.9f, 1.3f, 1.7f, 2.1f, 2.6f };
         static readonly float[] KeepP = { 0.85f, 0.66f, 0.56f, 0.50f, 0.38f };
+        // The web's per-seed and per-wall profiles, here rather than allocated in the loops.
+        static readonly float[] StrandQ = { 1.0f, 1.6f }, StrandK = { 1.0f, 0.6f };
+        static readonly float[] PatchQ = { 1.0f, 2.1f }, PatchW = { 0.75f, 0.15f };
 
         // --- a splat's character: one draw per rule ----------------------------------------------
         /// <summary>A seed's draw of every rule: its character. Two seeds differ in kind through
@@ -260,6 +263,7 @@ namespace CoverUp.Splatter
 
         static float Hypot(float a, float b) => (float)Math.Sqrt(a * a + b * b);
         static float Clamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
+        static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
         static float Interp(float x, float[] xs, float[] ys)
         {
             if (x <= xs[0]) return ys[0];
@@ -499,7 +503,7 @@ namespace CoverUp.Splatter
             for (int i = 0; i < seeds.Count; i++)
             {
                 float qi = Hypot(seeds[i].x, seeds[i].y) / Rc;
-                float w = Px(ch[WebStrandW] * Interp(qi, new[] { 1.0f, 1.6f }, new[] { 1.0f, 0.6f })) * rng.LogNormal(1f, 0.35f, 0.4f, 2.5f);
+                float w = Px(ch[WebStrandW] * Interp(qi, StrandQ, StrandK)) * rng.LogNormal(1f, 0.35f, 0.4f, 2.5f);
                 float nnI = nn[i] < float.MaxValue ? nn[i] : Rc * sIn;
                 float rI = Math.Max(Px(0.7f), 0.5f * nnI - w / 2);
                 holeR[i] = rI;
@@ -525,7 +529,7 @@ namespace CoverUp.Splatter
                 var (a, b) = edges[i];
                 float mx = (seeds[a].x + seeds[b].x) / 2, my = (seeds[a].y + seeds[b].y) / 2;
                 float qm = Hypot(mx, my) / Rc;
-                float wf = Interp(qm, new[] { 1.0f, 2.1f }, new[] { 0.75f, 0.15f });   // the patch field rules near the core, chance at the rim
+                float wf = Interp(qm, PatchQ, PatchW);   // the patch field rules near the core, chance at the rim
                 float keep = Interp(qm, KeepQ, KeepP) * keepScale;
                 if (qm > reachRc || wf * rank[i] + (1 - wf) * rng.Uniform(0, 1) > keep)
                 {
@@ -692,31 +696,52 @@ namespace CoverUp.Splatter
         static float Deg(float d) => d * Tau / 360f;
 
         /// <summary>Dart-thrown seeds in the annulus qLo..qHi (Rc) with a minimum spacing that
-        /// grows from sIn at 1.0 Rc to sOut at 2.4 Rc (fractions of Rc); grid-hashed rejection.</summary>
+        /// grows from sIn at 1.0 Rc to sOut at 2.4 Rc (fractions of Rc); grid-hashed rejection.
+        /// The grid is a flat array of per-cell chains rather than a dictionary of lists: a try
+        /// checks up to (2 x rad + 1)^2 cells, and hashing a tuple key for each was 60% of a whole
+        /// splat. Same draws, same test, same order of accepted points, so the same seeds.</summary>
         static List<(float x, float y)> WebSeeds(SplatRng rng, float Rc, float qLo, float qHi, float sIn, float sOut)
         {
             var pts = new List<(float x, float y)>(512);
-            var grid = new Dictionary<(int, int), List<(float x, float y)>>(1024);
             float cell = Rc * sIn * 0.8f;
             float area = (float)Math.PI * (qHi * qHi - qLo * qLo) * Rc * Rc;
             int tries = (int)(area / ((Rc * sIn) * (Rc * sIn)) * 14);
+            // Every point lies within qHi x Rc of the centre; two cells of slack cover rounding.
+            int lo = (int)Math.Floor(-qHi * Rc / cell) - 2, hi = (int)Math.Floor(qHi * Rc / cell) + 2;
+            int side = hi - lo + 1;
+            var head = new int[side * side];
+            for (int i = 0; i < head.Length; i++) head[i] = -1;
+            var next = new List<int>(512);
             for (int n = 0; n < tries; n++)
             {
                 float r = (float)Math.Sqrt(rng.Uniform(qLo * qLo, qHi * qHi)); float a = rng.Uniform(0, Tau);
                 float x = (float)Math.Cos(a) * r * Rc, y = (float)Math.Sin(a) * r * Rc;
                 float s = Rc * (sIn + (sOut - sIn) * Clamp((r - 1.0f) / 1.4f, 0f, 1f)) * 0.85f;
                 int gx = (int)Math.Floor(x / cell), gy = (int)Math.Floor(y / cell); int rad = (int)Math.Ceiling(s / cell); bool ok = true;
-                for (int i = gx - rad; i <= gx + rad && ok; i++)
-                    for (int j = gy - rad; j <= gy + rad && ok; j++)
-                        if (grid.TryGetValue((i, j), out var bucket))
-                            foreach (var (px, py) in bucket)
+                // Ring by ring outward from the try's own cell: most tries are rejected, and
+                // by a neighbour close by, so the nearest cells settle it soonest. Any order
+                // gives the same answer.
+                for (int d = 0; d <= rad && ok; d++)
+                    for (int i = gx - d; i <= gx + d && ok; i++)
+                    {
+                        if (i < lo || i > hi) continue;
+                        bool edgeRow = i == gx - d || i == gx + d;
+                        for (int j = gy - d; j <= gy + d; j += edgeRow || d == 0 ? 1 : 2 * d)
+                        {
+                            if (j < lo || j > hi) continue;
+                            for (int k = head[(i - lo) * side + (j - lo)]; k >= 0; k = next[k])
+                            {
+                                float px = pts[k].x, py = pts[k].y;
                                 if ((px - x) * (px - x) + (py - y) * (py - y) < s * s) { ok = false; break; }
-                if (ok)
-                {
-                    pts.Add((x, y));
-                    if (!grid.TryGetValue((gx, gy), out var b)) grid[(gx, gy)] = b = new List<(float x, float y)>(4);
-                    b.Add((x, y));
-                }
+                            }
+                            if (!ok) break;
+                        }
+                    }
+                if (!ok) continue;
+                int c = (Clamp(gx, lo, hi) - lo) * side + (Clamp(gy, lo, hi) - lo);   // the slack means the clamp never bites
+                next.Add(head[c]);
+                head[c] = pts.Count;
+                pts.Add((x, y));
             }
             return pts;
         }
@@ -845,35 +870,35 @@ namespace CoverUp.Splatter
                 Circum(P[n].x, P[n].y, P[n + 1].x, P[n + 1].y, P[n + 2].x, P[n + 2].y, out double ux, out double uy, out double r2);
                 tris.Add(new Tri { A = n, B = n + 1, C = n + 2, Cx = ux, Cy = uy, R2 = r2 });
             }
-            var bad = new List<int>(64);
-            var edgeCount = new Dictionary<(int, int), int>(128);
-            var keep = new List<Tri>(n * 2 + 8);
+            // The cavity's edges, in first-seen order (what a dictionary enumerated before:
+            // the triangle order, and so the edge order the web draws its walls in, must not
+            // change). A cavity is a handful of triangles, so a short array beats hashing.
+            var edgeA = new int[64]; var edgeB = new int[64]; var edgeN = new int[64];
             for (int pi = 0; pi < n; pi++)
             {
                 double x = P[pi].x, y = P[pi].y;
-                bad.Clear(); edgeCount.Clear();
+                int edges = 0;
+                // Drop the triangles whose circle holds the point, compacting in place (same
+                // order as copying the rest out), and count their edges as they go.
+                int w = 0;
                 for (int t = 0; t < tris.Count; t++)
                 {
                     var tr = tris[t];
-                    if ((tr.Cx - x) * (tr.Cx - x) + (tr.Cy - y) * (tr.Cy - y) < tr.R2) bad.Add(t);
+                    if ((tr.Cx - x) * (tr.Cx - x) + (tr.Cy - y) * (tr.Cy - y) < tr.R2)
+                    {
+                        Count(ref edgeA, ref edgeB, ref edgeN, ref edges, tr.A, tr.B);
+                        Count(ref edgeA, ref edgeB, ref edgeN, ref edges, tr.B, tr.C);
+                        Count(ref edgeA, ref edgeB, ref edgeN, ref edges, tr.C, tr.A);
+                        continue;
+                    }
+                    if (w != t) tris[w] = tr;
+                    w++;
                 }
-                foreach (int t in bad)
+                tris.RemoveRange(w, tris.Count - w);
+                for (int e = 0; e < edges; e++)
                 {
-                    var tr = tris[t];
-                    Count(edgeCount, tr.A, tr.B); Count(edgeCount, tr.B, tr.C); Count(edgeCount, tr.C, tr.A);
-                }
-                keep.Clear();
-                int bi = 0;
-                for (int t = 0; t < tris.Count; t++)
-                {
-                    if (bi < bad.Count && bad[bi] == t) { bi++; continue; }
-                    keep.Add(tris[t]);
-                }
-                tris.Clear(); tris.AddRange(keep);
-                foreach (var kv in edgeCount)
-                {
-                    if (kv.Value != 1) continue;
-                    var (i, j) = kv.Key;
+                    if (edgeN[e] != 1) continue;
+                    int i = edgeA[e], j = edgeB[e];
                     if (Circum(P[i].x, P[i].y, P[j].x, P[j].y, x, y, out double ux, out double uy, out double r2))
                         tris.Add(new Tri { A = i, B = j, C = pi, Cx = ux, Cy = uy, R2 = r2 });
                 }
@@ -887,10 +912,16 @@ namespace CoverUp.Splatter
             return outE;
         }
 
-        static void Count(Dictionary<(int, int), int> d, int a, int b)
+        static void Count(ref int[] ea, ref int[] eb, ref int[] en, ref int count, int a, int b)
         {
-            var k = a < b ? (a, b) : (b, a);
-            d.TryGetValue(k, out int c); d[k] = c + 1;
+            if (a > b) { int t = a; a = b; b = t; }
+            for (int e = 0; e < count; e++)
+                if (ea[e] == a && eb[e] == b) { en[e]++; return; }
+            if (count == ea.Length)
+            {
+                Array.Resize(ref ea, count * 2); Array.Resize(ref eb, count * 2); Array.Resize(ref en, count * 2);
+            }
+            ea[count] = a; eb[count] = b; en[count] = 1; count++;
         }
         static void AddEdge(List<(int, int)> outE, HashSet<(int, int)> seen, int a, int b)
         {

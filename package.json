@@ -1,6 +1,6 @@
 {
   "name": "com.coverup.splatter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "Open Splatter",
   "description": "Procedural paint splatter for Unity: seed-deterministic splats built from measured rules, colour palettes, a composition layer that lays a whole painting, a GPU painter and an optional outer glow. Pure C# generation, UnityEngine-only painting, no render pipeline dependency.",
   "unity": "2022.3",
